@@ -1,0 +1,77 @@
+name: Build and release Codex Timezone Sync
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run C ABI tests
+        run: make test
+      - name: Test Mihomo egress helper
+        run: python3 test_egress.py
+      - name: Assemble CPA-compatible plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.5.0"
+          if [[ "${GITHUB_REF_TYPE}" == tag && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Tag and plugin version mismatch" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          python3 - "${version}" "${{ matrix.arch }}" <<'PY'
+          import pathlib,sys,zipfile
+          version,arch=sys.argv[1:]
+          out=pathlib.Path('dist') / f'codex-timezone-sync_{version}_linux_{arch}.zip'
+          with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:
+              z.write('codex-timezone-sync.so',arcname='codex-timezone-sync.so')
+          with zipfile.ZipFile(out) as z:
+              assert z.namelist()==['codex-timezone-sync.so']
+          print(out)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-linux-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: plugin-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Generate and verify checksums
+        run: |
+          cd dist
+          sha256sum *.zip > checksums.txt
+          sha256sum -c checksums.txt
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt \
+            --title "Codex Timezone Sync ${GITHUB_REF_NAME}" \
+            --notes "Codex 时区同步插件。自动校正 Codex 请求中的日期与时区，并提供中文管理面板、出口检测、改写统计、模型一致性监控及失败请求日志。支持 Linux amd64 / arm64；手动检测功能须另行部署 refresh_egress.py 辅助服务。"
