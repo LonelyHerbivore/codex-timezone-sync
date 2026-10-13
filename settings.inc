@@ -34,7 +34,11 @@ static int save_settings(sync_settings cfg) {
   int m=snprintf(data,sizeof(data),"enabled=%d\nlogging=%d\ndebug=%d\n",cfg.enabled,cfg.logging,cfg.debug);
   int ok=fchmod(fd,0600)==0 && write(fd,data,(size_t)m)==m && fsync(fd)==0;
   if(close(fd)!=0)ok=0;
+#ifdef _WIN32
+  if(ok)ok=MoveFileExA(temp,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
+#else
   if(ok)ok=rename(temp,path)==0;
+#endif
   if(!ok)unlink(temp);
   return ok;
 }

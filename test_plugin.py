@@ -7,7 +7,9 @@ import os
 import pathlib
 import stat
 import socket
+import sys
 import threading
+import time
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -24,7 +26,7 @@ Shutdown = ct.CFUNCTYPE(None)
 class API(ct.Structure):
     _fields_ = [('abi_version', ct.c_uint32), ('call', Call), ('free_buffer', Free), ('shutdown', Shutdown)]
 
-LIB = ct.CDLL(str(ROOT / 'codex-timezone-sync.so'))
+LIB = ct.CDLL(str(ROOT / ('codex-timezone-sync.dll' if sys.platform == 'win32' else 'codex-timezone-sync.dylib' if sys.platform == 'darwin' else 'codex-timezone-sync.so')))
 LIB.cliproxy_plugin_init.argtypes = [ct.c_void_p, ct.POINTER(API)]
 LIB.cliproxy_plugin_init.restype = ct.c_int
 API_OBJ = API()
@@ -137,22 +139,44 @@ class TestTimezonePlugin(unittest.TestCase):
             code,result=self._management('egress/refresh','POST')
             self.assertEqual(code,503)
             self.assertFalse(result['ok'])
-            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
-                server.bind(str(self.socketpath))
-                server.listen(1)
+            if os.name == 'nt':
+                request=pathlib.Path(str(self.socketpath)+'.request')
+                ready=pathlib.Path(str(self.socketpath)+'.ready')
+                ready.touch()
                 def serve_once():
-                    conn,_=server.accept()
-                    with conn:
-                        self.assertEqual(conn.recv(32),b'REFRESH\n')
-                        self.path.write_text('America/New_York|2026-10-12|EDT|-04:00\n198.51.100.9\n')
-                        conn.sendall(b'OK\n')
+                    deadline=time.monotonic()+8
+                    while not request.exists() and time.monotonic()<deadline:
+                        time.sleep(.05)
+                    self.assertTrue(request.exists())
+                    nonce=request.read_text(encoding='ascii').strip()
+                    request.unlink(missing_ok=True)
+                    self.path.write_text('America/New_York|2026-10-12|EDT|-04:00\n198.51.100.9\n')
+                    pathlib.Path(str(self.socketpath)+'.'+nonce+'.reply').write_text('OK\n')
                 thread=threading.Thread(target=serve_once,daemon=True)
                 thread.start()
-                code,result=self._management('egress/refresh','POST')
-                thread.join(timeout=3)
-                self.assertEqual(code,200)
-                self.assertEqual(result['timezone'],'America/New_York')
-                self.assertEqual(result['ip'],'198.51.100.9')
+                try:
+                    code,result=self._management('egress/refresh','POST')
+                    thread.join(timeout=3)
+                finally:
+                    ready.unlink(missing_ok=True)
+                    request.unlink(missing_ok=True)
+            else:
+                with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
+                    server.bind(str(self.socketpath))
+                    server.listen(1)
+                    def serve_once():
+                        conn,_=server.accept()
+                        with conn:
+                            self.assertEqual(conn.recv(32),b'REFRESH\n')
+                            self.path.write_text('America/New_York|2026-10-12|EDT|-04:00\n198.51.100.9\n')
+                            conn.sendall(b'OK\n')
+                    thread=threading.Thread(target=serve_once,daemon=True)
+                    thread.start()
+                    code,result=self._management('egress/refresh','POST')
+                    thread.join(timeout=3)
+            self.assertEqual(code,200)
+            self.assertEqual(result['timezone'],'America/New_York')
+            self.assertEqual(result['ip'],'198.51.100.9')
         finally:
             self.path.write_text(before)
             self.socketpath.unlink(missing_ok=True)
@@ -174,7 +198,8 @@ class TestTimezonePlugin(unittest.TestCase):
         self.assertEqual(len(result['records']),1)
         failure=result['records'][0]
         self.assertEqual(failure['reason'],'state_unavailable')
-        self.assertEqual(stat.S_IMODE(self.failfile.stat().st_mode),0o600)
+        if os.name != 'nt':
+            self.assertEqual(stat.S_IMODE(self.failfile.stat().st_mode),0o600)
         code,view=self._management('failures/view','POST',{'id':failure['id']})
         self.assertEqual(code,200)
         self.assertEqual(view['kind'],'decoded-body')
@@ -241,6 +266,7 @@ class TestTimezonePlugin(unittest.TestCase):
         self.assertEqual(len(data['events']), 1)
         self.assertEqual(data['events'][0]['result'], 'rewritten')
 
+    @unittest.skipIf(os.name == 'nt', 'symlink creation requires extra privilege on Windows')
     def test_no_symlink_follow_for_event_read(self):
         self.config.unlink(missing_ok=True)
         protected=pathlib.Path(self.temp.name) / 'private.log'

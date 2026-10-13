@@ -1,5 +1,7 @@
 // Lightweight, bounded telemetry: never persist model input/output, headers, tokens or auth data.
+#ifndef _WIN32
 #include <sys/file.h>
+#endif
 #define EVENT_LIMIT 131072
 #define EVENT_ROWS 80
 static const char *log_path(void) {

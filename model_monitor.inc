@@ -1,5 +1,4 @@
 // Read-only upstream model consistency monitor. Never stores prompts, bodies, headers or tokens.
-#include <pthread.h>
 #define MODEL_HISTORY 128
 #define MODEL_PROBE_MAX (1024u * 1024u)
 typedef struct {
@@ -9,7 +8,7 @@ typedef struct {
 } model_record;
 static model_record model_history[MODEL_HISTORY];
 static int model_head=0,model_used=0;
-static pthread_mutex_t model_mutex=PTHREAD_MUTEX_INITIALIZER;
+static plugin_mutex_t model_mutex=PLUGIN_MUTEX_INITIALIZER;
 static int safe_id(const char *s) {
   return safe_field(s,"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.:",99);
 }
@@ -58,7 +57,7 @@ static void extract_original_zone(const char *payload,size_t len,char zone[80]) 
 static void monitor_new_request(const char *id,const char *requested,const char *routed,const char *before) {
   if(!id||!safe_id(id))return;
   if((!requested||!safe_model(requested))&&(!routed||!safe_model(routed)))return;
-  pthread_mutex_lock(&model_mutex);
+  plugin_mutex_lock(&model_mutex);
   int idx=find_model_record(id);
   if(idx<0){
     idx=model_head;
@@ -73,7 +72,7 @@ static void monitor_new_request(const char *id,const char *requested,const char 
   r->timestamp=(long long)time(NULL);
   snprintf(r->timezone_before,sizeof(r->timezone_before),"%s",before&&*before?before:"unknown");
   sync_state state;if(load_state(&state))snprintf(r->timezone_after,sizeof(r->timezone_after),"%s",state.zone);
-  pthread_mutex_unlock(&model_mutex);
+  plugin_mutex_unlock(&model_mutex);
 }
 static void monitor_request(const char *src,const tok *ts,int nt,int obj,const char *body,size_t len) {
   char *id=field_string(src,ts,nt,obj,"RequestID","request_id");
@@ -144,7 +143,7 @@ static int model_from_payload(const char *payload,size_t len,char out[96]) {
 static void monitor_observation(const char *id,const char *upstream,const char *channel) {
   if(!id||!safe_id(id)||!safe_model(upstream))return;
   int status=0;
-  pthread_mutex_lock(&model_mutex);
+  plugin_mutex_lock(&model_mutex);
   int idx=find_model_record(id);
   if(idx>=0) {
     model_record *r=&model_history[idx];
@@ -154,7 +153,7 @@ static void monitor_observation(const char *id,const char *upstream,const char *
     r->checked=(!strcasecmp(r->requested,upstream))?1:2;
     status=r->checked;
   }
-  pthread_mutex_unlock(&model_mutex);
+  plugin_mutex_unlock(&model_mutex);
   if(status==1)log_event("model_match");
   if(status==2)log_event("model_mismatch");
 }
@@ -192,7 +191,7 @@ static void monitor_response(const char *method,const uint8_t *bytes,size_t len)
 }
 static void handle_model_records(cliproxy_buffer *out) {
   char json[36000];size_t used=0;int matched=0,mismatched=0,unknown=0;
-  pthread_mutex_lock(&model_mutex);
+  plugin_mutex_lock(&model_mutex);
   for(int i=0;i<model_used;i++){
     const model_record *r=&model_history[(model_head+MODEL_HISTORY-1-i)%MODEL_HISTORY];
     if(r->checked==1)matched++;
@@ -212,7 +211,7 @@ static void handle_model_records(cliproxy_buffer *out) {
     if(written<0||(size_t)written>=sizeof(json)-used-3)break;
     used+=(size_t)written;
   }
-  pthread_mutex_unlock(&model_mutex);
+  plugin_mutex_unlock(&model_mutex);
   snprintf(json+used,sizeof(json)-used,"]}");
   http_response(out,200,"application/json",json);
 }

@@ -2,6 +2,9 @@ name: Build and release Codex Timezone Sync
 
 on:
   push:
+    branches:
+      - main
+      - 'feature/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -10,61 +13,82 @@ permissions:
   contents: write
 
 jobs:
-  linux:
+  build:
+    name: Native ABI (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+          - platform: linux_amd64
+            runner: ubuntu-24.04
+          - platform: linux_arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin_amd64
+            runner: macos-15-intel
+          - platform: darwin_arm64
+            runner: macos-15
+          - platform: windows_amd64
+            runner: windows-2022
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build and run C ABI tests
-        run: make test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install timezone data for cross-platform Python tests
+        run: python -m pip install tzdata
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            make
+      - name: Build and run native plugin tests (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: make test PYTHON=python
+      - name: Embed management panel (Windows)
+        if: runner.os == 'Windows'
+        run: python embed_ui.py
+      - name: Build DLL (Windows UCRT64)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: gcc -O2 -std=c11 -Wall -Wextra -Werror -shared -o codex-timezone-sync.dll plugin.c -static-libgcc -lws2_32
+      - name: Run native plugin tests (Windows)
+        if: runner.os == 'Windows'
+        run: python test_plugin.py
       - name: Test Mihomo egress helper
-        run: python3 test_egress.py
+        run: python test_egress.py
       - name: Assemble CPA-compatible plugin ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="0.5.0"
-          if [[ "${GITHUB_REF_TYPE}" == tag && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
-            echo "Tag and plugin version mismatch" >&2
-            exit 1
-          fi
-          mkdir -p dist
-          python3 - "${version}" "${{ matrix.arch }}" <<'PY'
-          import pathlib,sys,zipfile
-          version,arch=sys.argv[1:]
-          out=pathlib.Path('dist') / f'codex-timezone-sync_{version}_linux_{arch}.zip'
-          with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:
-              z.write('codex-timezone-sync.so',arcname='codex-timezone-sync.so')
-          with zipfile.ZipFile(out) as z:
-              assert z.namelist()==['codex-timezone-sync.so']
-          print(out)
-          PY
+        run: python package_release.py 0.5.1 ${{ matrix.platform }}
       - uses: actions/upload-artifact@v4
         with:
-          name: plugin-linux-${{ matrix.arch }}
+          name: plugin-${{ matrix.platform }}
           path: dist/*.zip
           if-no-files-found: error
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: linux
+    needs: build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: plugin-linux-*
+          pattern: plugin-*
           merge-multiple: true
           path: dist
-      - name: Generate and verify checksums
+      - name: Generate and verify five-platform checksums
+        shell: bash
         run: |
+          set -euo pipefail
+          version=0.5.1
+          test "${GITHUB_REF_NAME}" = "v${version}"
           cd dist
+          for platform in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64; do
+            test -s "codex-timezone-sync_${version}_${platform}.zip"
+          done
+          test "$(find . -name '*.zip' -type f | wc -l)" -eq 5
           sha256sum *.zip > checksums.txt
           sha256sum -c checksums.txt
       - name: Create GitHub release
@@ -74,4 +98,4 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt \
             --title "Codex Timezone Sync ${GITHUB_REF_NAME}" \
-            --notes "Codex 时区同步插件。自动校正 Codex 请求中的日期与时区，并提供中文管理面板、出口检测、改写统计、模型一致性监控及失败请求日志。支持 Linux amd64 / arm64；手动检测功能须另行部署 refresh_egress.py 辅助服务。"
+            --notes "Codex 时区同步插件。支持 Linux amd64 / arm64、macOS Intel / Apple Silicon 和 Windows amd64。中文管理面板、出口时区检测、改写统计、模型一致性检测及失败请求日志。需要单独安装出口时区检测辅助服务；详情参见 README。"

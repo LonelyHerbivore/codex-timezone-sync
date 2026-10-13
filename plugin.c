@@ -1,7 +1,12 @@
 // codex-timezone-sync: CLIProxyAPI C ABI v1 request interceptor.
 // No third-party C libraries; fail-open. Only failed Codex API bodies may be archived.
 // Transport credentials and surrounding management/interceptor headers are excluded.
+#ifdef _WIN32
+#define __USE_MINGW_ANSI_STDIO 1
+#endif
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
@@ -10,6 +15,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include "platform_compat.h"
 static void derive_local_date(char *date,size_t cap,const char *offset);
 #include "dashboard_bundle.h"
 
@@ -292,10 +298,10 @@ static void handle_clear_activity(cliproxy_buffer *out) {
   if(ok)fsync(fd);
   flock(fd,LOCK_UN);close(fd);
   if(!ok) {http_response(out,500,"application/json","{\"ok\":false,\"reason\":\"unable to clear events\"}");return;}
-  pthread_mutex_lock(&model_mutex);
+  plugin_mutex_lock(&model_mutex);
   memset(model_history,0,sizeof(model_history));
   model_head=0;model_used=0;
-  pthread_mutex_unlock(&model_mutex);
+  plugin_mutex_unlock(&model_mutex);
   http_response(out,200,"application/json","{\"ok\":true}");
 }
 
@@ -507,7 +513,7 @@ static int plugin_call(const char *method,const uint8_t *request,size_t request_
   if(response){response->ptr=NULL;response->len=0;}
   if(!method||!response)return 1;
   if(!strcmp(method,"plugin.register")||!strcmp(method,"plugin.reconfigure")) {
-    reply(response,"{\"ok\":true,\"result\":{\"schema_version\":1,\"metadata\":{\"Name\":\"Codex Timezone Sync\",\"Version\":\"0.5.0\",\"Author\":\"LonelyHerbivore\",\"GitHubRepository\":\"https://github.com/LonelyHerbivore/codex-timezone-sync\",\"ConfigFields\":[]},\"capabilities\":{\"request_interceptor\":true,\"management_api\":true,\"response_interceptor\":true,\"response_stream_interceptor\":true,\"websocket_response_observer\":true}}}");
+    reply(response,"{\"ok\":true,\"result\":{\"schema_version\":1,\"metadata\":{\"Name\":\"Codex Timezone Sync\",\"Version\":\"0.5.1\",\"Author\":\"LonelyHerbivore\",\"GitHubRepository\":\"https://github.com/LonelyHerbivore/codex-timezone-sync\",\"ConfigFields\":[]},\"capabilities\":{\"request_interceptor\":true,\"management_api\":true,\"response_interceptor\":true,\"response_stream_interceptor\":true,\"websocket_response_observer\":true}}}");
     return 0;
   }
   if(!strcmp(method,"management.register")) {
@@ -541,7 +547,12 @@ static int plugin_call(const char *method,const uint8_t *request,size_t request_
 }
 static void plugin_free(void *p,size_t n){(void)n;free(p);}
 static void plugin_shutdown(void){}
-__attribute__((visibility("default"))) int cliproxy_plugin_init(const cliproxy_host_api *host,cliproxy_plugin_api *plugin){
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+int cliproxy_plugin_init(const cliproxy_host_api *host,cliproxy_plugin_api *plugin){
   (void)host;
   if(!plugin)return 1;
   plugin->abi_version=ABI_VERSION;

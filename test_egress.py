@@ -36,6 +36,7 @@ class TestHostEgress(unittest.TestCase):
                 self.assertIn("203.0.113.22",observed)
                 opener.assert_called_once()
 
+    @unittest.skipIf(os.name == 'nt', 'Windows uses file-mailbox transport')
     def test_unix_socket_helper_refresh_command(self):
         with tempfile.TemporaryDirectory() as path:
             sock=str(pathlib.Path(path)/"test.sock")
@@ -51,6 +52,17 @@ class TestHostEgress(unittest.TestCase):
                     finally:
                         server.shutdown()
                         thread.join(timeout=3)
+                refresh.assert_called_once()
+
+    def test_windows_mailbox_helper_refresh_command(self):
+        with tempfile.TemporaryDirectory() as path:
+            target = pathlib.Path(path)/'refresh.sock'
+            nonce = '0123456789abcdef'
+            pathlib.Path(str(target)+'.request').write_text(nonce+'\n')
+            with mock.patch.object(helper,'refresh') as refresh:
+                self.assertTrue(helper.windows_poll_once(target))
+                self.assertEqual(pathlib.Path(str(target)+'.'+nonce+'.reply').read_text(), 'OK\n')
+                self.assertFalse(helper.windows_poll_once(target))
                 refresh.assert_called_once()
 
 if __name__ == "__main__":

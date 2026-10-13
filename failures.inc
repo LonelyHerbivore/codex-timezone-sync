@@ -17,7 +17,16 @@ static int persist_failure(const char *reason,const char *body,size_t len) {
   if(flock(fd,LOCK_EX)!=0 || fstat(fd,&st)!=0 || !S_ISREG(st.st_mode) ||
      fchmod(fd,0600)!=0) {close(fd);free(encoded);return 0;}
   struct timespec now;
+#ifdef _WIN32
+  FILETIME ft;ULARGE_INTEGER ticks;
+  GetSystemTimeAsFileTime(&ft);
+  ticks.LowPart=ft.dwLowDateTime;ticks.HighPart=ft.dwHighDateTime;
+  unsigned long long unix_ticks=ticks.QuadPart-116444736000000000ULL;
+  now.tv_sec=(time_t)(unix_ticks/10000000ULL);
+  now.tv_nsec=(long)((unix_ticks%10000000ULL)*100ULL);
+#else
   clock_gettime(CLOCK_REALTIME,&now);
+#endif
   static unsigned int nonce=0;
   unsigned long long id=(unsigned long long)now.tv_sec*1000000000ULL+
     (unsigned long long)now.tv_nsec+(unsigned long long)__sync_fetch_and_add(&nonce,1);

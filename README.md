@@ -2,7 +2,7 @@
 
 用于 [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) 的 Codex 请求时区同步插件。适合 OAuth 账号通过代理出口访问 Codex 时，需要让请求内的日期、时区与代理出口所在地区保持一致的场景。
 
-**当前版本：v0.5.0。支持平台：Linux amd64 / arm64。** 采用 CPA C ABI v1，带中文管理面板。其他系统和架构尚未发布二进制包。
+**当前版本：v0.5.1。目标平台：Linux amd64 / arm64、macOS amd64 / arm64、Windows amd64。** 采用 CPA C ABI v1，带中文管理面板。各平台发布包只有在 GitHub Actions 对应系统原生构建与测试成功后才发布。
 
 ## 功能
 
@@ -36,7 +36,7 @@ plugins:
       enabled: true
 ```
 
-从插件商店安装后确保单插件开关打开，并检查日志中插件已注册。Release 提供 `linux/amd64`、`linux/arm64` 动态库 ZIP 和 `checksums.txt`；其他平台尚不支持。插件商店只安装动态库，**不会自动安装主机端出口时区检测辅助服务**，参阅下一节。
+从插件商店安装后确保单插件开关打开，并检查日志中插件已注册。Release 提供 `linux_amd64`、`linux_arm64`、`darwin_amd64`、`darwin_arm64`、`windows_amd64` 五种动态库 ZIP（分别含 `.so`、`.dylib`、`.dll`）和 `checksums.txt`。插件商店只安装动态库，**不会自动安装主机端出口时区检测辅助服务**，参阅下一节。
 
 ## 出口时区检测与手动刷新
 
@@ -53,7 +53,7 @@ America/Los_Angeles|2026-10-12|PDT|-07:00
 66.92.223.4
 ```
 
-Linux 主机需有 Python 3.9+（含 `zoneinfo` 数据）、可访问 Docker 的权限及可达的代理出口。推荐通过环境变量显式配置路径和代理：
+辅助服务所在主机需有 Python 3.9+（含 `zoneinfo` / Windows 的 `tzdata` 包）、可访问代理出口。除预置的 Linux Docker 探测模式外，macOS / Windows 建议显式设置 `CODEX_TZ_PROXY`，以确保与 CPA 上游出口一致。推荐通过环境变量显式配置路径和代理：
 
 ```bash
 export CODEX_TZ_STATE=/你的共享数据目录/codex-timezone-sync.state
@@ -70,6 +70,12 @@ python3 refresh_egress.py --serve
 其中 `CODEX_TZ_PROXY` 必须指向 **Codex 实际使用的同一个出口代理**；请勿让检测脚本走不同 IP。未设置时脚本会尝试按开发环境中的 `mihomo` 容器和 `cpa-proxy-net` 网络定位代理，该默认值并不适用于所有部署。宿主机的状态文件与 Unix Socket 需映射到 CPA 容器的 `/CLIProxyAPI/data/` 下；容器中 Socket 默认路径是 `/CLIProxyAPI/data/codex-timezone-sync-refresh.sock`。如需自定义，设置容器环境变量 `CODEX_TZ_STATE_FILE` / `CODEX_TZ_REFRESH_SOCKET`。
 
 手动刷新依赖 Unix Socket 辅助服务并不是安装插件的必要条件；如果使用计划任务定期写入状态文件，自动改写仍然可用。建议状态文件刷新间隔不超过 30 分钟，插件对超过约 2 小时的状态会视为过期。
+
+### macOS / Windows 补充说明
+
+macOS 与 Linux 一样使用 Unix Domain Socket 进行手动「获取」。Windows 系统的 Python 不支持 Unix Socket，因此 v0.5.1 的 Windows DLL 与 `refresh_egress.py --serve` 通过 CPA 数据目录中的文件请求/应答信箱通信：`<CODEX_TZ_REFRESH_SOCKET>.ready`、`.request`、`.<nonce>.reply`。只传递随机请求标识与 OK/ERR 状态，**不会把用户请求正文放入信箱**。Windows 主机必须确保共享目录仅允许可信管理员和 CPA 账户读写（NTFS ACL），并用 `python -m pip install tzdata` 安装 IANA 时区数据。Windows 默认数据目录为 `C:\\CLIProxyAPI\\data`，可通过 `CODEX_TZ_STATE_FILE`、`CODEX_TZ_REFRESH_SOCKET`（DLL）和 `CODEX_TZ_STATE`、`CODEX_TZ_REFRESH_SOCKET`（辅助脚本）分别修改。
+
+在 Windows/macOS 上，如果只有动态库而没有运行探测辅助脚本，管理界面的「获取」会提示失败，但通过外部定时任务生成的有效状态文件仍可供时区改写使用。
 
 ## 管理界面与数据安全
 

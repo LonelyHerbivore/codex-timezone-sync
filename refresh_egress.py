@@ -28,7 +28,8 @@ def resolve_proxy():
     ip = str(ipaddress.ip_address(result.stdout.strip()))
     return f'http://{ip}:7890'
 
-STATE = pathlib.Path(os.getenv('CODEX_TZ_STATE', '/home/admin/CLIProxyAPI-mc/data/codex-timezone-sync.state'))
+DEFAULT_DATA = (r'C:\CLIProxyAPI\data' if os.name == 'nt' else '/home/admin/CLIProxyAPI-mc/data')
+STATE = pathlib.Path(os.getenv('CODEX_TZ_STATE', str(pathlib.Path(DEFAULT_DATA) / 'codex-timezone-sync.state')))
 URL = 'https://ipinfo.io/json'
 
 def refresh():
@@ -78,9 +79,59 @@ class RefreshHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
 
+def windows_poll_once(socket_path):
+    """One Windows local-file mailbox iteration; only a trigger ID is exchanged.
+
+    Windows Python does not expose AF_UNIX. Keep the mailbox inside the
+    administrator-controlled CPA data directory, protected by Windows ACLs.
+    """
+    request = pathlib.Path(str(socket_path) + '.request')
+    if not request.is_file():
+        return False
+    try:
+        nonce = request.read_text(encoding='ascii').strip()
+    except (OSError, UnicodeError):
+        nonce = ''
+    request.unlink(missing_ok=True)
+    if not re.fullmatch(r'[0-9a-f]{16}', nonce):
+        return True
+    target = pathlib.Path(str(socket_path) + '.' + nonce + '.reply')
+    try:
+        with _lock:
+            refresh()
+        result = 'OK\n'
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        print(f'refresh helper error: {type(exc).__name__}: {exc}', file=sys.stderr)
+        result = 'ERR\n'
+    fd, temp = tempfile.mkstemp(prefix='.tz-reply-', dir=socket_path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='ascii') as stream:
+            stream.write(result)
+            stream.flush()
+        os.replace(temp, target)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    return True
+
+
+def windows_serve(socket_path):
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    ready = pathlib.Path(str(socket_path) + '.ready')
+    print(f'Codex TZ Windows helper polling {socket_path}', flush=True)
+    try:
+        while True:
+            ready.touch()
+            windows_poll_once(socket_path)
+            threading.Event().wait(.2)
+    finally:
+        ready.unlink(missing_ok=True)
+
 def serve():
     socket_path = pathlib.Path(os.getenv('CODEX_TZ_REFRESH_SOCKET',
-        '/home/admin/CLIProxyAPI-mc/data/codex-timezone-sync-refresh.sock'))
+        str(pathlib.Path(DEFAULT_DATA) / 'codex-timezone-sync-refresh.sock')))
+    if os.name == 'nt':
+        return windows_serve(socket_path)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         if stat.S_ISSOCK(socket_path.lstat().st_mode):
