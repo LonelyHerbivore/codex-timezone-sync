@@ -37,7 +37,7 @@ static void handle_logs(cliproxy_buffer *out) {
   if(f) {
     char line[250];
     while(fgets(line,sizeof(line),f)) {
-      if(!strchr(line,'\n')) {int c;while((c=fgetc(f))!='\n'&&c!=EOF);continue;}
+      if(!strchr(line,'\n')) {int c;while((c=fgetc(f))!='\n'&&c!=EOF){}continue;}
       strcpy(rows[total%EVENT_ROWS],line);
       total++;if(stored<EVENT_ROWS)stored++;
     }

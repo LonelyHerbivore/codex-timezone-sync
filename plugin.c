@@ -4,7 +4,9 @@
 #ifdef _WIN32
 #define __USE_MINGW_ANSI_STDIO 1
 #endif
-#ifndef _WIN32
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE 1
+#elif !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include <ctype.h>
